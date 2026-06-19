@@ -83,7 +83,7 @@
             <geom material="BlackAbs" mesh="front_left_lower_leg" class="visual"/>
 
             <!-- <geom name="fl_lleg_collision" mesh="left_lower_leg_collision" class="collision"/> -->
-            <geom name="fl_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.030"/>
+            <geom name="fl_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.028"/>
             
             <geom name="FL" class="foot"/>
             <site name="FL_site" pos="0 0 -0.3365" size="0.01"/>
@@ -108,7 +108,7 @@
             <geom material="BlackAbs" mesh="front_right_lower_leg" class="visual"/>
 
             <!-- <geom name="fr_lleg_collision" mesh="right_lower_leg_collision" class="collision"/> -->
-            <geom name="fr_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.030"/>
+            <geom name="fr_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.028"/>
 
             <geom name="FR" class="foot"/>
             <site name="FR_site" pos="0 0 -0.3365" size="0.01"/>
@@ -133,7 +133,7 @@
             <geom material="BlackAbs" mesh="rear_left_lower_leg" class="visual"/>
 
             <!-- <geom name="hl_lleg_collision" mesh="left_lower_leg_collision" class="collision"/> -->
-            <geom name="hl_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.030"/>
+            <geom name="hl_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.028"/>
 
             <geom name="HL" class="foot"/>
             <site name="HL_site" pos="0 0 -0.3365" size="0.01"/>
@@ -158,7 +158,7 @@
             <geom material="BlackAbs" mesh="rear_left_lower_leg" class="visual"/>
 
             <!-- <geom name="hr_lleg_collision" mesh="right_lower_leg_collision" class="collision"/> -->
-            <geom name="hr_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.030"/>
+            <geom name="hr_lleg_collision" class="collision" type="capsule" fromto="0 0 -0.02 0 0 -0.3125" size="0.028"/>
 
             <geom name="HR" class="foot"/>
             <site name="HR_site" pos="0 0 -0.3365" size="0.01"/>

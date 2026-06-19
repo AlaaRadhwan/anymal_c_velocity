@@ -219,13 +219,6 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.events.pop("push_robot", None)
     # cfg.terminations.pop("illegal_contact", None)
-    for event_name in (
-      "push_robot",
-      "foot_friction",
-      "base_com",
-      "encoder_bias",
-    ):
-      cfg.events.pop(event_name, None)
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:

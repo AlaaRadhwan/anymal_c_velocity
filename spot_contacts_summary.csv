@@ -1,0 +1,14 @@
+geom,contact_percentage,total_contact_time_s,event_count,longest_event_s,first_contact_s,last_contact_s,max_force_N,mean_force_N,min_distance_mm
+body_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+fl_uleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+fl_lleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+FL,100.0,120.0,1,120.0,0.0,119.998,157.96607971191406,53.241624105314415,-14.35844600200653
+fr_uleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+fr_lleg_collision,99.94,119.928,3,119.86,0.056,119.998,178.97793579101562,31.34879019536979,-1.7519218381494284
+FR,100.0,120.0,1,120.0,0.0,119.998,455.266845703125,152.0430457618922,-18.085166811943054
+hl_uleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+hl_lleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+HL,100.0,120.0,1,120.0,0.0,119.998,187.5646209716797,131.88852828893363,-15.593722462654114
+hr_uleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+hr_lleg_collision,0.0,0.0,0,0.0,nan,nan,0.0,0.0,nan
+HR,100.0,120.0,1,120.0,0.0,119.998,192.12567138671875,106.50269237160981,-15.692725777626038

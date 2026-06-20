@@ -1,7 +1,5 @@
 """Boston Dynamics Spot velocity environment configurations."""
 
-import math
-
 import torch
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -16,30 +14,21 @@ from anymal_c_velocity.spot.spot_constants import (
 )
 
 
-def illegal_contact_after_grace(
+def illegal_nonfoot_contact(
   env,
   sensor_name: str,
-  grace_period_s: float,
 ) -> torch.Tensor:
-  """Terminate on any non-foot contact after reset settling."""
+  """Terminate when any monitored non-foot geom contacts terrain."""
 
   sensor = env.scene[sensor_name]
 
   if sensor.data.found is None:
     raise RuntimeError(f"Contact sensor '{sensor_name}' does not provide found data.")
 
-  # Collapse every sensor/contact dimension into one Boolean
-  # result for each parallel environment.
-  contact_detected = sensor.data.found.reshape(
+  return sensor.data.found.reshape(
     env.num_envs,
     -1,
   ).any(dim=1)
-
-  grace_steps = math.ceil(grace_period_s / env.step_dt)
-
-  grace_finished = env.episode_length_buf >= grace_steps
-
-  return contact_detected & grace_finished
 
 
 def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -198,10 +187,9 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   # End the episode when a non-foot collision geom touches the floor.
   cfg.terminations["illegal_contact"] = TerminationTermCfg(
-    func=illegal_contact_after_grace,
+    func=illegal_nonfoot_contact,
     params={
       "sensor_name": nonfoot_ground_cfg.name,
-      "grace_period_s": 0.6,
     },
   )
 
@@ -254,5 +242,134 @@ def spot_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   # No terrain-level curriculum is needed on a plane.
   cfg.curriculum.pop("terrain_levels", None)
+
+  # ---------------------------------------------------------------
+  # Initial locomotion training conditions
+  # ---------------------------------------------------------------
+
+  # Do not apply periodic disturbances while the policy is still
+  # discovering basic stepping and command tracking.
+  cfg.events.pop("push_robot", None)
+
+  command = cfg.commands["twist"]
+  assert isinstance(command, UniformVelocityCommandCfg)
+
+  # Use direct body-frame velocity commands.
+  command.heading_command = False
+  command.rel_heading_envs = 0.0
+  command.ranges.heading = None
+
+  # Do not assign zero commands during the initial gait-discovery run.
+  # Every environment must initially attempt forward locomotion.
+  command.rel_standing_envs = 0.0
+
+  # Give the policy enough time to establish a gait before resampling.
+  command.resampling_time_range = (4.0, 7.0)
+
+  # Initial curriculum stage: nonzero forward walking only.
+  command.ranges.lin_vel_x = (0.3, 0.8)
+  command.ranges.lin_vel_y = (0.0, 0.0)
+  command.ranges.ang_vel_z = (0.0, 0.0)
+
+  # ---------------------------------------------------------------
+  # Command curriculum
+  #
+  # RSL-RL collects 24 environment steps per learning iteration.
+  # Therefore, iteration N corresponds approximately to N * 24
+  # environment-control steps.
+  # ---------------------------------------------------------------
+
+  cfg.curriculum["command_vel"].params["velocity_stages"] = [
+    {
+      # Iterations 0–1499:
+      # Discover forward stepping.
+      "step": 0,
+      "lin_vel_x": (0.3, 0.8),
+      "lin_vel_y": (0.0, 0.0),
+      "ang_vel_z": (0.0, 0.0),
+    },
+    {
+      # From approximately iteration 1500:
+      # Add backward walking and gentle turning.
+      "step": 1500 * 24,
+      "lin_vel_x": (-0.5, 1.0),
+      "lin_vel_y": (0.0, 0.0),
+      "ang_vel_z": (-0.25, 0.25),
+    },
+    {
+      # From approximately iteration 3000:
+      # Introduce moderate lateral commands.
+      "step": 3000 * 24,
+      "lin_vel_x": (-0.8, 1.0),
+      "lin_vel_y": (-0.35, 0.35),
+      "ang_vel_z": (-0.5, 0.5),
+    },
+    {
+      # From approximately iteration 5000:
+      # Full omnidirectional target command range.
+      "step": 5000 * 24,
+      "lin_vel_x": (-1.0, 1.0),
+      "lin_vel_y": (-1.0, 1.0),
+      "ang_vel_z": (-0.5, 0.5),
+    },
+  ]
+
+  # ---------------------------------------------------------------
+  # Locomotion reward balance
+  # ---------------------------------------------------------------
+
+  # Command tracking must be the principal objective.
+  cfg.rewards["track_linear_velocity"].weight = 4.0
+  cfg.rewards["track_linear_velocity"].params["std"] = 0.5
+
+  # Initially this rewards low unwanted rotation. Later it also rewards
+  # commanded yaw-rate tracking.
+  cfg.rewards["track_angular_velocity"].weight = 1.5
+
+  # Upright posture supports locomotion but does not dominate it.
+  cfg.rewards["upright"].weight = 1.0
+
+  # Keep only a weak preference for the home pose. A large pose reward
+  # encourages standing still and resists the joint excursions needed
+  # for walking.
+  cfg.rewards["pose"].weight = 0.15
+
+  cfg.rewards["pose"].params["std_walking"] = {
+    ".*_hx": 0.45,
+    ".*_hy": 0.45,
+    ".*_kn": 0.80,
+  }
+
+  cfg.rewards["pose"].params["std_running"] = {
+    ".*_hx": 0.55,
+    ".*_hy": 0.55,
+    ".*_kn": 0.90,
+  }
+
+  # Encourage feet to leave the terrain, but keep this reward modest
+  # so the policy does not learn excessive hopping.
+  cfg.rewards["air_time"].weight = 0.25
+  cfg.rewards["air_time"].params["threshold_min"] = 0.08
+  cfg.rewards["air_time"].params["threshold_max"] = 0.45
+  cfg.rewards["air_time"].params["command_threshold"] = 0.2
+
+  # Desired foot-site height during swing. The standing site height is
+  # approximately 0.021 m, so 0.08 m corresponds to about 6 cm of lift.
+  cfg.rewards["foot_clearance"].weight = -0.5
+  cfg.rewards["foot_clearance"].params["target_height"] = 0.08
+  cfg.rewards["foot_clearance"].params["command_threshold"] = 0.2
+
+  cfg.rewards["foot_swing_height"].weight = -0.1
+  cfg.rewards["foot_swing_height"].params["target_height"] = 0.08
+  cfg.rewards["foot_swing_height"].params["command_threshold"] = 0.2
+
+  # Preserve smoothness and traction penalties without suppressing
+  # the exploratory motions needed to discover locomotion.
+  cfg.rewards["action_rate_l2"].weight = -0.05
+  cfg.rewards["foot_slip"].weight = -0.1
+  cfg.rewards["foot_slip"].params["command_threshold"] = 0.2
+
+  cfg.rewards["soft_landing"].weight = -1e-5
+  cfg.rewards["soft_landing"].params["command_threshold"] = 0.2
 
   return cfg

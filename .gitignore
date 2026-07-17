@@ -29,3 +29,6 @@ Downloadable Files/
 *.tar.gz
 src/src_zip/
 src/zip_spot_v1.0/
+
+deployment/
+tools/

@@ -406,10 +406,54 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
-  # Raise command visualization above the robot.
-  command = cfg.commands["twist"]
-  assert isinstance(command, UniformVelocityCommandCfg)
-  command.viz.z_offset = 0.5
+  # Use the same omnidirectional command distribution on every terrain
+  base_command = cfg.commands["twist"]
+  assert isinstance(
+    base_command,
+    UniformVelocityCommandCfg,
+  )
+
+  cfg.commands["twist"] = SplitVelocityCommandCfg(
+    entity_name=base_command.entity_name,
+
+    resampling_time_range=(3.0, 6.0),
+    debug_vis=base_command.debug_vis,
+
+    heading_command=False,
+    heading_control_stiffness=(
+      base_command.heading_control_stiffness
+    ),
+    rel_heading_envs=0.0,
+
+    # Exact standing commands.
+    rel_standing_envs=0.10,
+
+    init_velocity_prob=0.0,
+
+    ranges=UniformVelocityCommandCfg.Ranges(
+      lin_vel_x=(-0.65, 0.65),
+      lin_vel_y=(-0.2, 0.2),
+      ang_vel_z=(-0.5, 0.5),
+      heading=None,
+    ),
+
+    viz=UniformVelocityCommandCfg.VizCfg(
+      z_offset=0.5,
+      scale=base_command.viz.scale,
+    ),
+
+    lin_vel_x_abs_range=(0.35, 0.65),
+    forward_probability=0.50,
+
+    pure_lateral_probability=0.20,
+
+    lin_vel_y_abs_range=(0.20, 0.40),
+    left_probability=0.50,
+  )
+  
+  # Prevent the inherited curriculum from chaning this distribution.
+  cfg.curriculum.pop("command_vel", None)
+
 
   if play:
     # Allow continuous viewing without short episode timeouts.
@@ -483,106 +527,6 @@ def spot_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Do not apply periodic disturbances while the policy is still
   # discovering basic stepping and command tracking.
   cfg.events.pop("push_robot", None)
-
-  base_command = cfg.commands["twist"]
-  assert isinstance(
-    base_command,
-    UniformVelocityCommandCfg,
-  )
-
-
-  cfg.commands["twist"] = SplitVelocityCommandCfg(
-    entity_name=base_command.entity_name,
-
-    resampling_time_range=(3.0, 6.0),
-    debug_vis=base_command.debug_vis,
-
-    heading_command=False,
-    heading_control_stiffness=(
-      base_command.heading_control_stiffness
-    ),
-    rel_heading_envs=0.0,
-
-    # Exact standing commands.
-    rel_standing_envs=0.10,
-
-    init_velocity_prob=0.0,
-
-    ranges=UniformVelocityCommandCfg.Ranges(
-      # Declared total envelopes.
-      lin_vel_x=(-0.65, 0.65),
-
-      # Used for the non-pure-lateral environments.
-      # This preserves the mild diagonal commands already learned.
-      lin_vel_y=(-0.2, 0.2),
-
-      ang_vel_z=(-0.5, 0.5),
-      heading=None,
-    ),
-
-    viz=UniformVelocityCommandCfg.VizCfg(
-      z_offset=0.5,
-      scale=base_command.viz.scale,
-    ),
-
-    # Forward/backward magnitude.
-    lin_vel_x_abs_range=(0.35, 0.65),
-    forward_probability=0.50,
-
-    # Begin with 20% of moving commands being pure sideways.
-    pure_lateral_probability=0.20,
-
-    # Pure sideways speed magnitude.
-    lin_vel_y_abs_range=(0.20, 0.40),
-    left_probability=0.50,
-  )
-
-
-  # Do not let the inherited curriculum overwrite the distribution.
-  cfg.curriculum.pop("command_vel", None)
-
-  # ---------------------------------------------------------------
-  # Command curriculum
-  #
-  # RSL-RL collects 24 environment steps per learning iteration.
-  # Therefore, iteration N corresponds approximately to N * 24
-  # environment-control steps.
-  # ---------------------------------------------------------------
-  cfg.curriculum.pop("command_vel", None)
-  # cfg.curriculum["command_vel"].params["velocity_stages"] = [
-  #   {
-  #     # Iterations 0–1499:
-  #     # Discover forward stepping.
-  #     "step": 0,
-  #     "lin_vel_x": (0.3, 0.8),
-  #     "lin_vel_y": (0.0, 0.0),
-  #     "ang_vel_z": (0.0, 0.0),
-  #   },
-  #   {
-  #     # From approximately iteration 1500:
-  #     # Add backward walking and gentle turning.
-  #     "step": 1500 * 24,
-  #     "lin_vel_x": (-0.5, 1.0),
-  #     "lin_vel_y": (0.0, 0.0),
-  #     "ang_vel_z": (-0.25, 0.25),
-  #   },
-  #   {
-  #     # From approximately iteration 3000:
-  #     # Introduce moderate lateral commands.
-  #     "step": 3000 * 24,
-  #     "lin_vel_x": (-0.8, 1.0),
-  #     "lin_vel_y": (-0.35, 0.35),
-  #     "ang_vel_z": (-0.5, 0.5),
-  #   },
-  #   {
-  #     # From approximately iteration 5000:
-  #     # Full omnidirectional target command range.
-  #     "step": 5000 * 24,
-  #     "lin_vel_x": (-1.0, 1.0),
-  #     "lin_vel_y": (-1.0, 1.0),
-  #     "ang_vel_z": (-0.5, 0.5),
-  #   },
-  # ]
 
   # ---------------------------------------------------------------
   # Locomotion reward balance

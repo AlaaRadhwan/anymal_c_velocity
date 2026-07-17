@@ -1,13 +1,31 @@
-# Python-generated files
+# Python
+.venv/
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Virtual environments
-.venv
+# Editors and operating system
+.vscode/
+.idea/
+.DS_Store
 
-# Training logs
+# Training outputs
+wandb/
+artifacts/
+runs/
 logs/
+checkpoints/
+*.tfevents.*
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Local archives and copied project folders
+Downloadable Files/
+*.zip
+*.tar.gz
+src/src_zip/
+src/zip_spot_v1.0/

@@ -67,25 +67,25 @@ SPOT_INIT_STATE = EntityCfg.InitialStateCfg(
 FOOT_GEOM_REGEX = r"^(FL|FR|HL|HR)$"
 
 SPOT_COLLISION_CFG = CollisionCfg(
-    geom_names_expr=(
-        r".*_collision$",
-        FOOT_GEOM_REGEX,
-    ),
-    condim={
-        r".*_collision$": 3,
-        FOOT_GEOM_REGEX: 6,
-    },
-    priority={
-        r".*_collision$": 0,
-        FOOT_GEOM_REGEX: 1,
-    },
-    friction={
-        r".*_collision$": (0.6,),
-        FOOT_GEOM_REGEX: (0.8, 0.02, 0.01),
-    },
-    solimp={
-        FOOT_GEOM_REGEX: (0.015, 1.0, 0.036),
-    },
+  geom_names_expr=(
+    r".*_collision$",
+    FOOT_GEOM_REGEX,
+  ),
+  condim={
+    r".*_collision$": 3,
+    FOOT_GEOM_REGEX: 6,
+  },
+  priority={
+    r".*_collision$": 0,
+    FOOT_GEOM_REGEX: 1,
+  },
+  friction={
+    r".*_collision$": (0.6,),
+    FOOT_GEOM_REGEX: (0.8, 0.02, 0.01),
+  },
+  solimp={
+    FOOT_GEOM_REGEX: (0.015, 1.0, 0.036),
+  },
 )
 
 
@@ -113,7 +113,7 @@ def get_spot_robot_cfg() -> EntityCfg:
 # The neural-network output will later be multiplied by these values and
 # added to the nominal standing joint position.
 SPOT_ACTION_SCALE: dict[str, float] = {
-  ".*_hx": 0.20,
-  ".*_hy": 0.25,
-  ".*_kn": 0.30,
+  ".*_hx": 0.30,
+  ".*_hy": 0.4,
+  ".*_kn": 0.50,
 }

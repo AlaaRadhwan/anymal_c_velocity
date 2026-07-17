@@ -1,17 +1,195 @@
 """Boston Dynamics Spot velocity environment configurations."""
 
+from dataclasses import dataclass
+
 import torch
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
+from mjlab.tasks.velocity.mdp import (
+  UniformVelocityCommand,
+  UniformVelocityCommandCfg,
+)
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 from anymal_c_velocity.spot.spot_constants import (
   SPOT_ACTION_SCALE,
   get_spot_robot_cfg,
 )
+
+@dataclass(kw_only=True)
+class SplitVelocityCommandCfg(UniformVelocityCommandCfg):
+  """Sample longitudinal, diagonal, and pure-lateral commands."""
+
+  # Magnitude of vx for forward/backward-moving environments.
+  lin_vel_x_abs_range: tuple[float, float] = (0.35, 0.65)
+
+  # Probability that a longitudinal command points forward.
+  forward_probability: float = 0.5
+
+  # Fraction of moving commands that will be purely lateral.
+  pure_lateral_probability: float = 0.20
+
+  # Magnitude of vy for pure-lateral environments.
+  lin_vel_y_abs_range: tuple[float, float] = (0.20, 0.40)
+
+  # Probability of positive body-frame y motion.
+  # For your Spot convention, positive y is left.
+  left_probability: float = 0.5
+
+  def __post_init__(self) -> None:
+    super().__post_init__()
+
+    min_x, max_x = self.lin_vel_x_abs_range
+    if min_x <= 0.0:
+      raise ValueError(
+        "lin_vel_x_abs_range minimum must be greater than zero."
+      )
+    if max_x < min_x:
+      raise ValueError(
+        "lin_vel_x_abs_range maximum must be greater than "
+        "or equal to its minimum."
+      )
+
+    min_y, max_y = self.lin_vel_y_abs_range
+    if min_y <= 0.0:
+      raise ValueError(
+        "lin_vel_y_abs_range minimum must be greater than zero."
+      )
+    if max_y < min_y:
+      raise ValueError(
+        "lin_vel_y_abs_range maximum must be greater than "
+        "or equal to its minimum."
+      )
+
+    if not 0.0 <= self.forward_probability <= 1.0:
+      raise ValueError(
+        "forward_probability must be between 0 and 1."
+      )
+
+    if not 0.0 <= self.pure_lateral_probability <= 1.0:
+      raise ValueError(
+        "pure_lateral_probability must be between 0 and 1."
+      )
+
+    if not 0.0 <= self.left_probability <= 1.0:
+      raise ValueError(
+        "left_probability must be between 0 and 1."
+      )
+
+    if self.init_velocity_prob != 0.0:
+      raise ValueError(
+        "SplitVelocityCommandCfg currently requires "
+        "init_velocity_prob=0.0."
+      )
+
+  def build(self, env):
+    return SplitVelocityCommand(self, env)
+
+
+class SplitVelocityCommand(UniformVelocityCommand):
+  """Sample longitudinal/diagonal or pure-lateral motion."""
+
+  cfg: SplitVelocityCommandCfg
+
+  def _resample_command(
+    self,
+    env_ids: torch.Tensor,
+  ) -> None:
+    # Standard MjLab sampling handles:
+    # - vy for ordinary longitudinal/diagonal commands
+    # - yaw velocity
+    # - standing environments
+    # - heading environments
+    super()._resample_command(env_ids)
+
+    num_envs = len(env_ids)
+    if num_envs == 0:
+      return
+
+    # Select which environments receive pure-lateral commands.
+    lateral_mask = (
+      torch.rand(
+        num_envs,
+        device=self.device,
+      )
+      < self.cfg.pure_lateral_probability
+    )
+
+    longitudinal_mask = ~lateral_mask
+
+    # -------------------------------------------------------------
+    # Forward/backward or diagonal commands
+    # -------------------------------------------------------------
+    longitudinal_ids = env_ids[longitudinal_mask]
+
+    if len(longitudinal_ids) > 0:
+      min_x, max_x = self.cfg.lin_vel_x_abs_range
+
+      x_magnitude = torch.empty(
+        len(longitudinal_ids),
+        device=self.device,
+      ).uniform_(min_x, max_x)
+
+      forward_mask = (
+        torch.rand(
+          len(longitudinal_ids),
+          device=self.device,
+        )
+        < self.cfg.forward_probability
+      )
+
+      x_direction = torch.where(
+        forward_mask,
+        torch.ones_like(x_magnitude),
+        -torch.ones_like(x_magnitude),
+      )
+
+      self.vel_command_b[longitudinal_ids, 0] = (
+        x_direction * x_magnitude
+      )
+
+      # vy is left unchanged here. It retains the value sampled from:
+      # ranges.lin_vel_y
+      #
+      # Therefore:
+      # ranges.lin_vel_y = (-0.15, 0.15)
+      # produces mild diagonal commands.
+
+    # -------------------------------------------------------------
+    # Pure sideways commands
+    # -------------------------------------------------------------
+    lateral_ids = env_ids[lateral_mask]
+
+    if len(lateral_ids) > 0:
+      min_y, max_y = self.cfg.lin_vel_y_abs_range
+
+      y_magnitude = torch.empty(
+        len(lateral_ids),
+        device=self.device,
+      ).uniform_(min_y, max_y)
+
+      left_mask = (
+        torch.rand(
+          len(lateral_ids),
+          device=self.device,
+        )
+        < self.cfg.left_probability
+      )
+
+      y_direction = torch.where(
+        left_mask,
+        torch.ones_like(y_magnitude),
+        -torch.ones_like(y_magnitude),
+      )
+
+      # Pure lateral means no longitudinal motion.
+      self.vel_command_b[lateral_ids, 0] = 0.0
+      self.vel_command_b[lateral_ids, 1] = (
+        y_direction * y_magnitude
+      )
 
 
 def illegal_nonfoot_contact(
@@ -29,6 +207,41 @@ def illegal_nonfoot_contact(
     env.num_envs,
     -1,
   ).any(dim=1)
+
+
+def excessive_foot_air_time(
+  env,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float,
+  max_air_time: float,
+) -> torch.Tensor:
+  """Penalize feet that remain continously airborne too long."""
+
+  sensor = env.scene[sensor_name]
+
+  if sensor.data.current_air_time is None:
+    raise RuntimeError(f"Sensor '{sensor_name}' must use track_air_time=True.")
+
+  air_time = sensor.data.current_air_time
+
+  # Zero below the permitted air time.
+  # Scale and clamp the penalty to keep it bounded in [0, 1]
+  excess = torch.clamp(
+    (air_time - max_air_time) / max_air_time,
+    min=0.0,
+    max=1.0,
+  )
+
+  penalty = torch.max(excess, dim=1).values
+
+  command = env.command_manager.get_command(command_name)
+
+  command_magnitude = torch.linalg.vector_norm(command[:, :2], dim=1) + torch.abs(
+    command[:, 2]
+  )
+
+  return penalty * (command_magnitude > command_threshold).float()
 
 
 def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -205,8 +418,28 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Disable observation noise and external pushes while debugging.
     cfg.observations["actor"].enable_corruption = False
 
-    cfg.events.pop("push_robot", None)
+    # cfg.events.pop("push_robot", None)
+    push_event = cfg.events["push_robot"]
+    push_event.interval_range_s = (2.0, 5.0)
+
+    push_event.params["velocity_range"] = {
+      "x": (-0.25, 0.25),
+      "y": (-0.5, 0.5),
+      "z": (0.0, 0.0),
+      "roll": (0.0, 0.0),
+      "pitch": (0.0, 0.0),
+      "yaw": (-0.15, 0.15),
+    }
+
     # cfg.terminations.pop("illegal_contact", None)
+    # Deterministic policy evaluation.
+    for event_name in (
+      "push_robot",
+      "foot_friction",
+      "base_com",
+      "encoder_bias",
+    ):
+      cfg.events.pop(event_name, None)
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
@@ -251,25 +484,62 @@ def spot_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # discovering basic stepping and command tracking.
   cfg.events.pop("push_robot", None)
 
-  command = cfg.commands["twist"]
-  assert isinstance(command, UniformVelocityCommandCfg)
+  base_command = cfg.commands["twist"]
+  assert isinstance(
+    base_command,
+    UniformVelocityCommandCfg,
+  )
 
-  # Use direct body-frame velocity commands.
-  command.heading_command = False
-  command.rel_heading_envs = 0.0
-  command.ranges.heading = None
 
-  # Do not assign zero commands during the initial gait-discovery run.
-  # Every environment must initially attempt forward locomotion.
-  command.rel_standing_envs = 0.0
+  cfg.commands["twist"] = SplitVelocityCommandCfg(
+    entity_name=base_command.entity_name,
 
-  # Give the policy enough time to establish a gait before resampling.
-  command.resampling_time_range = (4.0, 7.0)
+    resampling_time_range=(3.0, 6.0),
+    debug_vis=base_command.debug_vis,
 
-  # Initial curriculum stage: nonzero forward walking only.
-  command.ranges.lin_vel_x = (0.3, 0.8)
-  command.ranges.lin_vel_y = (0.0, 0.0)
-  command.ranges.ang_vel_z = (0.0, 0.0)
+    heading_command=False,
+    heading_control_stiffness=(
+      base_command.heading_control_stiffness
+    ),
+    rel_heading_envs=0.0,
+
+    # Exact standing commands.
+    rel_standing_envs=0.10,
+
+    init_velocity_prob=0.0,
+
+    ranges=UniformVelocityCommandCfg.Ranges(
+      # Declared total envelopes.
+      lin_vel_x=(-0.65, 0.65),
+
+      # Used for the non-pure-lateral environments.
+      # This preserves the mild diagonal commands already learned.
+      lin_vel_y=(-0.2, 0.2),
+
+      ang_vel_z=(-0.5, 0.5),
+      heading=None,
+    ),
+
+    viz=UniformVelocityCommandCfg.VizCfg(
+      z_offset=0.5,
+      scale=base_command.viz.scale,
+    ),
+
+    # Forward/backward magnitude.
+    lin_vel_x_abs_range=(0.35, 0.65),
+    forward_probability=0.50,
+
+    # Begin with 20% of moving commands being pure sideways.
+    pure_lateral_probability=0.20,
+
+    # Pure sideways speed magnitude.
+    lin_vel_y_abs_range=(0.20, 0.40),
+    left_probability=0.50,
+  )
+
+
+  # Do not let the inherited curriculum overwrite the distribution.
+  cfg.curriculum.pop("command_vel", None)
 
   # ---------------------------------------------------------------
   # Command curriculum
@@ -278,94 +548,102 @@ def spot_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Therefore, iteration N corresponds approximately to N * 24
   # environment-control steps.
   # ---------------------------------------------------------------
-
-  cfg.curriculum["command_vel"].params["velocity_stages"] = [
-    {
-      # Iterations 0–1499:
-      # Discover forward stepping.
-      "step": 0,
-      "lin_vel_x": (0.3, 0.8),
-      "lin_vel_y": (0.0, 0.0),
-      "ang_vel_z": (0.0, 0.0),
-    },
-    {
-      # From approximately iteration 1500:
-      # Add backward walking and gentle turning.
-      "step": 1500 * 24,
-      "lin_vel_x": (-0.5, 1.0),
-      "lin_vel_y": (0.0, 0.0),
-      "ang_vel_z": (-0.25, 0.25),
-    },
-    {
-      # From approximately iteration 3000:
-      # Introduce moderate lateral commands.
-      "step": 3000 * 24,
-      "lin_vel_x": (-0.8, 1.0),
-      "lin_vel_y": (-0.35, 0.35),
-      "ang_vel_z": (-0.5, 0.5),
-    },
-    {
-      # From approximately iteration 5000:
-      # Full omnidirectional target command range.
-      "step": 5000 * 24,
-      "lin_vel_x": (-1.0, 1.0),
-      "lin_vel_y": (-1.0, 1.0),
-      "ang_vel_z": (-0.5, 0.5),
-    },
-  ]
+  cfg.curriculum.pop("command_vel", None)
+  # cfg.curriculum["command_vel"].params["velocity_stages"] = [
+  #   {
+  #     # Iterations 0–1499:
+  #     # Discover forward stepping.
+  #     "step": 0,
+  #     "lin_vel_x": (0.3, 0.8),
+  #     "lin_vel_y": (0.0, 0.0),
+  #     "ang_vel_z": (0.0, 0.0),
+  #   },
+  #   {
+  #     # From approximately iteration 1500:
+  #     # Add backward walking and gentle turning.
+  #     "step": 1500 * 24,
+  #     "lin_vel_x": (-0.5, 1.0),
+  #     "lin_vel_y": (0.0, 0.0),
+  #     "ang_vel_z": (-0.25, 0.25),
+  #   },
+  #   {
+  #     # From approximately iteration 3000:
+  #     # Introduce moderate lateral commands.
+  #     "step": 3000 * 24,
+  #     "lin_vel_x": (-0.8, 1.0),
+  #     "lin_vel_y": (-0.35, 0.35),
+  #     "ang_vel_z": (-0.5, 0.5),
+  #   },
+  #   {
+  #     # From approximately iteration 5000:
+  #     # Full omnidirectional target command range.
+  #     "step": 5000 * 24,
+  #     "lin_vel_x": (-1.0, 1.0),
+  #     "lin_vel_y": (-1.0, 1.0),
+  #     "ang_vel_z": (-0.5, 0.5),
+  #   },
+  # ]
 
   # ---------------------------------------------------------------
   # Locomotion reward balance
   # ---------------------------------------------------------------
 
-  # Command tracking must be the principal objective.
-  cfg.rewards["track_linear_velocity"].weight = 4.0
+  # Follow the proven generic ANYmal-style locomotion balance.
+  cfg.rewards["track_linear_velocity"].weight = 2.0
   cfg.rewards["track_linear_velocity"].params["std"] = 0.5
 
-  # Initially this rewards low unwanted rotation. Later it also rewards
-  # commanded yaw-rate tracking.
-  cfg.rewards["track_angular_velocity"].weight = 1.5
+  cfg.rewards["track_angular_velocity"].weight = 2.0
 
-  # Upright posture supports locomotion but does not dominate it.
   cfg.rewards["upright"].weight = 1.0
 
-  # Keep only a weak preference for the home pose. A large pose reward
-  # encourages standing still and resists the joint excursions needed
-  # for walking.
-  cfg.rewards["pose"].weight = 0.15
+  # Strong enough to discourage the sheared, outward-leg posture,
+  # while the walking tolerances still permit normal stepping.
+  cfg.rewards["pose"].weight = 1.0
+
+  cfg.rewards["pose"].params["std_standing"] = {
+    ".*_hx": 0.05,
+    ".*_hy": 0.05,
+    ".*_kn": 0.10,
+  }
 
   cfg.rewards["pose"].params["std_walking"] = {
-    ".*_hx": 0.45,
-    ".*_hy": 0.45,
-    ".*_kn": 0.80,
+    ".*_hx": 0.30,
+    ".*_hy": 0.30,
+    ".*_kn": 0.60,
   }
 
   cfg.rewards["pose"].params["std_running"] = {
-    ".*_hx": 0.55,
-    ".*_hy": 0.55,
-    ".*_kn": 0.90,
+    ".*_hx": 0.30,
+    ".*_hy": 0.30,
+    ".*_kn": 0.60,
   }
 
-  # Encourage feet to leave the terrain, but keep this reward modest
-  # so the policy does not learn excessive hopping.
-  cfg.rewards["air_time"].weight = 0.25
-  cfg.rewards["air_time"].params["threshold_min"] = 0.08
-  cfg.rewards["air_time"].params["threshold_max"] = 0.45
-  cfg.rewards["air_time"].params["command_threshold"] = 0.2
+  # Do not reward air time directly.
+  cfg.rewards["air_time"].weight = 0.0
 
-  # Desired foot-site height during swing. The standing site height is
-  # approximately 0.021 m, so 0.08 m corresponds to about 6 cm of lift.
-  cfg.rewards["foot_clearance"].weight = -0.5
+  cfg.rewards["excessive_air_time"] = RewardTermCfg(
+    func=excessive_foot_air_time,
+    weight=-0.35,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.2,
+      "max_air_time": 0.35,
+    },
+  )
+
+  # Stronger swing-foot trajectory shaping.
+  cfg.rewards["foot_clearance"].weight = -2.0
   cfg.rewards["foot_clearance"].params["target_height"] = 0.08
   cfg.rewards["foot_clearance"].params["command_threshold"] = 0.2
 
-  cfg.rewards["foot_swing_height"].weight = -0.1
+  cfg.rewards["foot_swing_height"].weight = -0.25
   cfg.rewards["foot_swing_height"].params["target_height"] = 0.08
   cfg.rewards["foot_swing_height"].params["command_threshold"] = 0.2
 
-  # Preserve smoothness and traction penalties without suppressing
-  # the exploratory motions needed to discover locomotion.
-  cfg.rewards["action_rate_l2"].weight = -0.05
+  # Standard smoothness and traction regularization.
+  cfg.rewards["action_rate_l2"].weight = -0.1
+
   cfg.rewards["foot_slip"].weight = -0.1
   cfg.rewards["foot_slip"].params["command_threshold"] = 0.2
 

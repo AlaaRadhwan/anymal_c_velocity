@@ -267,7 +267,7 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.decimation = 10
 
   # Increase simulation/contact capacities for the quadruped.
-  cfg.sim.mujoco.ccd_iterations = 500
+  cfg.sim.mujoco.ccd_iterations = 50
   cfg.sim.contact_sensor_maxmatch = 500
   cfg.sim.nconmax = 128
 
@@ -376,7 +376,10 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   # Enable terrain difficulty progression for rough-terrain training.
   if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
-    cfg.scene.terrain.terrain_generator.curriculum = True
+    terrain_generator = cfg.scene.terrain.terrain_generator
+    terrain_generator.curriculum = True
+
+    terrain_generator.horizontal_scale = 0.20
 
   # Convert policy outputs into joint-position offsets.
   joint_pos_action = cfg.actions["joint_pos"]

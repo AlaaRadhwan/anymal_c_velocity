@@ -4,15 +4,10 @@ from dataclasses import dataclass
 
 import torch
 from mjlab.envs import ManagerBasedRlEnvCfg
-from mjlab.envs import mdp as envs_mdp
+
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
-from mjlab.managers.command_manager import (
-  CommandTerm,
-  CommandTermCfg,
-)
-from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity.mdp import (
   UniformVelocityCommand,
@@ -24,67 +19,6 @@ from anymal_c_velocity.spot.spot_constants import (
   SPOT_ACTION_SCALE,
   get_spot_robot_cfg,
 )
-
-@dataclass(kw_only=True)
-class UniformBodyHeightCommandCfg(CommandTermCfg):
-  """Sample a uniform body height command."""
-  
-  height_range: tuple[float, float] = (0.46, 0.46)
-
-  def __post_init__(self) -> None:
-    min_height, max_height = self.height_range
-
-    if min_height <= 0.0:
-      raise ValueError(
-        "Body height must be greater than zero."
-      )
-
-    if max_height < min_height:
-      raise ValueError(
-        "Body height maximum must be greater than or equal to its minimum."
-      )
-    
-  def build(self, env):
-    return UniformBodyHeightCommand(self, env)
-
-class UniformBodyHeightCommand(CommandTerm):
-  """Generate a scalar body-height command."""
-
-  cfg: UniformBodyHeightCommandCfg
-
-  def __init__(
-    self,
-    cfg: UniformBodyHeightCommandCfg,
-    env,
-  ) -> None:
-    super().__init__(cfg, env)
-
-    self.height_command = torch.zeros(
-      self.num_envs,
-      1,
-      device=self.device,
-    )
-
-  @property
-  def command(self) -> torch.Tensor:
-    return self.height_command
-
-  def _resample_command(
-    self,
-    env_ids: torch.Tensor,
-  ) -> None:
-    min_height, max_height = self.cfg.height_range
-
-    self.height_command[
-      env_ids,
-      0,
-    ].uniform_(min_height, max_height)
-
-  def _update_command(self) -> None:
-    pass
-
-  def _update_metrics(self) -> None:
-    pass
 
 
 @dataclass(kw_only=True)
@@ -260,11 +194,11 @@ class SplitVelocityCommand(UniformVelocityCommand):
       )
 
 
-def illegal_nonfoot_contact(
+def terrain_contact_detected(
   env,
   sensor_name: str,
 ) -> torch.Tensor:
-  """Terminate when any monitored non-foot geom contacts terrain."""
+  """Return whether selected robot geoms contact the terrain."""
 
   sensor = env.scene[sensor_name]
 
@@ -311,44 +245,6 @@ def excessive_foot_air_time(
 
   return penalty * (command_magnitude > command_threshold).float()
 
-
-def track_body_height(
-  env,
-  command_name: str,
-  std: float,
-  sensor_name: str | None,
-) -> torch.Tensor:
-  """Reward tracking body height relative to local terrain."""
-
-  command = env.command_manager.get_command(
-    command_name
-  )
-
-  if sensor_name is None:
-    # Flat plane is located at world z = 0.
-    robot = env.scene["robot"]
-    actual_height = robot.data.root_link_pos_w[:, 2]
-
-  else:
-    # Height of the body-mounted sensor above nearby terrain.
-    terrain_heights = envs_mdp.height_scan(
-      env,
-      sensor_name=sensor_name,
-    )
-
-    # Resistant to isolated high or low scan points.
-    actual_height = torch.median(
-      terrain_heights,
-      dim=1,
-    ).values
-
-  height_error = torch.square(
-    command[:, 0] - actual_height
-  )
-
-  return torch.exp(
-    -height_error / std**2
-  )
 
 def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the Spot rough-terrain velocity environment."""
@@ -420,14 +316,48 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
 
   # Detect body or leg contact with the terrain.
-  nonfoot_ground_cfg = ContactSensorCfg(
-    name="nonfoot_ground_touch",
+  # nonfoot_ground_cfg = ContactSensorCfg(
+  #   name="nonfoot_ground_touch",
+  #   primary=ContactMatch(
+  #     mode="geom",
+  #     entity="robot",
+  #     pattern=r".*_collision$",
+  #     # pattern="body_collision",
+  #     exclude=geom_names,
+  #   ),
+  #   secondary=ContactMatch(
+  #     mode="body",
+  #     pattern="terrain",
+  #   ),
+  #   fields=("found",),
+  #   reduce="none",
+  #   num_slots=1,
+  # )
+
+  # Contacts that indicate an actual fall or sever collision
+  terminal_ground_cfg = ContactSensorCfg(
+    name="terminal_ground_touch",
     primary=ContactMatch(
       mode="geom",
       entity="robot",
-      pattern=r".*_collision$",
-      # pattern="body_collision",
-      exclude=geom_names,
+      pattern=r"(body_collision|.*_uleg_collision)",
+    ),
+    secondary=ContactMatch(
+      mode="body",
+      pattern="terrain",
+    ),
+    fields=("found",),
+    reduce="none",
+    num_slots=1,
+  )
+
+  # Lower-leg contacts are undesirable but recoverable on stairs
+  lower_leg_ground_cfg = ContactSensorCfg(
+    name="lower_leg_ground_touch",
+    primary=ContactMatch(
+      mode="geom",
+      entity="robot",
+      pattern=r".*_lleg_collision",
     ),
     secondary=ContactMatch(
       mode="body",
@@ -440,7 +370,8 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.scene.sensors = (cfg.scene.sensors or ()) + (
     feet_ground_cfg,
-    nonfoot_ground_cfg,
+    terminal_ground_cfg,
+    lower_leg_ground_cfg,
   )
 
   # Enable terrain difficulty progression for rough-terrain training.
@@ -489,16 +420,6 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Robot-specific base body used by reward terms.
   cfg.rewards["upright"].params["asset_cfg"].body_names = ("body",)
 
-  cfg.rewards["track_body_height"] = RewardTermCfg(
-    func=track_body_height,
-    weight=1.0,
-    params={
-      "command_name": "body_height",
-      "sensor_name": "terrain_scan",
-      "std": 0.05,
-    }
-  )
-
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("body",)
 
   # Robot-specific feet used by locomotion rewards.
@@ -516,9 +437,9 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   # End the episode when a non-foot collision geom touches the floor.
   cfg.terminations["illegal_contact"] = TerminationTermCfg(
-    func=illegal_nonfoot_contact,
+    func=terrain_contact_detected,
     params={
-      "sensor_name": nonfoot_ground_cfg.name,
+      "sensor_name": terminal_ground_cfg.name,
     },
   )
 
@@ -547,9 +468,9 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     init_velocity_prob=0.0,
 
     ranges=UniformVelocityCommandCfg.Ranges(
-      lin_vel_x=(-0.65, 0.65),
-      lin_vel_y=(-0.2, 0.2),
-      ang_vel_z=(-0.5, 0.5),
+      lin_vel_x=(-1.5, 1.5),
+      lin_vel_y=(-0.4, 0.4),
+      ang_vel_z=(-1.0, 1.0),
       heading=None,
     ),
 
@@ -558,35 +479,13 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       scale=base_command.viz.scale,
     ),
 
-    lin_vel_x_abs_range=(0.35, 0.65),
+    lin_vel_x_abs_range=(0.15, 1.5),
     forward_probability=0.50,
 
     pure_lateral_probability=0.20,
 
-    lin_vel_y_abs_range=(0.20, 0.40),
+    lin_vel_y_abs_range=(0.15, 0.80),
     left_probability=0.50,
-  )
-
-  cfg.commands["body_height"] = (
-    UniformBodyHeightCommandCfg(
-      resampling_time_range=(3.0, 6.0),
-      height_range=(0.46, 0.46),
-      debug_vis=False,
-    )
-  )
-
-  cfg.observations["actor"].terms["body_height_command"] = ObservationTermCfg(
-    func=envs_mdp.generated_commands,
-    params={
-      "command_name": "body_height",
-    },
-  )
-
-  cfg.observations["critic"].terms["body_height_command"] = ObservationTermCfg(
-    func=envs_mdp.generated_commands,
-    params={
-      "command_name": "body_height",
-    },
   )
 
   
@@ -623,6 +522,14 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.rewards["foot_clearance"].weight = 0.0
   cfg.rewards["foot_swing_height"].weight = 0.0
+
+  cfg.rewards["lower_leg_contact"] = RewardTermCfg(
+    func=terrain_contact_detected,
+    weight=-0.5,
+    params={
+      "sensor_name": lower_leg_ground_cfg.name,
+    },
+  )
 
 
   if play:
@@ -710,8 +617,6 @@ def spot_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["foot_swing_height"].weight = -0.25
   cfg.rewards["foot_swing_height"].params["target_height"] = 0.08
   cfg.rewards["foot_swing_height"].params["command_threshold"] = 0.2
-
-  cfg.rewards["track_body_height"].params["sensor_name"] = None
 
 
   return cfg

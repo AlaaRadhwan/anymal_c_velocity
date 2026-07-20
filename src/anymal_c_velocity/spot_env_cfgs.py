@@ -1,5 +1,5 @@
 """Boston Dynamics Spot velocity environment configurations."""
-
+import os
 from dataclasses import dataclass
 
 import torch
@@ -20,6 +20,7 @@ from anymal_c_velocity.spot.spot_constants import (
   get_spot_robot_cfg,
 )
 
+from anymal_c_velocity.spot.ps5_command import Ps5VelocityCommandCfg
 
 @dataclass(kw_only=True)
 class SplitVelocityCommandCfg(UniformVelocityCommandCfg):
@@ -453,43 +454,71 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     UniformVelocityCommandCfg,
   )
 
-  cfg.commands["twist"] = SplitVelocityCommandCfg(
-    entity_name=base_command.entity_name,
-
-    resampling_time_range=(3.0, 6.0),
-    debug_vis=base_command.debug_vis,
-
-    heading_command=False,
-    heading_control_stiffness=(
+  common_command_kwargs = {
+    "entity_name": base_command.entity_name,
+    "resampling_time_range": (3.0, 6.0),
+    "debug_vis": base_command.debug_vis,
+    "heading_command": False,
+    "heading_control_stiffness": (
       base_command.heading_control_stiffness
     ),
-    rel_heading_envs=0.0,
-
-    # Exact standing commands.
-    rel_standing_envs=0.10,
-
-    init_velocity_prob=0.0,
-
-    ranges=UniformVelocityCommandCfg.Ranges(
+    "rel_heading_envs": 0.0,
+    "init_velocity_prob": 0.0,
+    "ranges": UniformVelocityCommandCfg.Ranges(
       lin_vel_x=(-1.5, 1.5),
       lin_vel_y=(-0.4, 0.4),
       ang_vel_z=(-1.0, 1.0),
       heading=None,
     ),
-
-    viz=UniformVelocityCommandCfg.VizCfg(
+    "viz": UniformVelocityCommandCfg.VizCfg(
       z_offset=0.5,
       scale=base_command.viz.scale,
     ),
+  }
 
-    lin_vel_x_abs_range=(0.15, 1.5),
-    forward_probability=0.50,
-
-    pure_lateral_probability=0.20,
-
-    lin_vel_y_abs_range=(0.15, 0.80),
-    left_probability=0.50,
+  use_ps5_control = (
+    play
+    and os.environ.get(
+      "SPOT_PS5_CONTROL",
+      "0",
+    ) == "1"
   )
+
+  if use_ps5_control:
+    cfg.commands["twist"] = Ps5VelocityCommandCfg(
+      **common_command_kwargs,
+
+      # Manual control supplies exact zero when sticks are centered.
+      rel_standing_envs=0.0,
+
+      controller_index=0,
+      deadzone=0.12,
+
+      min_vx=0.25,
+      max_vx=1.50,
+
+      max_diagonal_vy=0.40,
+
+      min_lateral_vy=0.25,
+      max_lateral_vy=0.80,
+
+      max_wz=1.00,
+    )
+
+  else:
+    cfg.commands["twist"] = SplitVelocityCommandCfg(
+      **common_command_kwargs,
+
+      rel_standing_envs=0.10,
+
+      lin_vel_x_abs_range=(0.25, 1.5),
+      forward_probability=0.50,
+
+      pure_lateral_probability=0.20,
+
+      lin_vel_y_abs_range=(0.25, 0.80),
+      left_probability=0.50,
+    )
 
   
   # Prevent the inherited curriculum from chaning this distribution.
@@ -568,8 +597,8 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
         cfg.scene.terrain.terrain_generator.curriculum = False
-        cfg.scene.terrain.terrain_generator.num_cols = 5
-        cfg.scene.terrain.terrain_generator.num_rows = 5
+        cfg.scene.terrain.terrain_generator.num_cols = 20
+        cfg.scene.terrain.terrain_generator.num_rows = 10
         cfg.scene.terrain.terrain_generator.border_width = 10.0
 
   return cfg

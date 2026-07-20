@@ -32,6 +32,8 @@ def spot_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     actor=RslRlModelCfg(
       hidden_dims=(512, 256, 128),
       stochastic=True,
+      init_noise_std=1.0,  # Keep enough exploration for rapid, unfamiliar movements.
+      noise_std_type="log",
     ),
     critic=RslRlModelCfg(
       hidden_dims=(512, 256, 128),

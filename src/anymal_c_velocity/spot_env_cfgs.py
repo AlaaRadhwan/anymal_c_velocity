@@ -24,67 +24,144 @@ from anymal_c_velocity.spot.ps5_command import Ps5VelocityCommandCfg
 
 @dataclass(kw_only=True)
 class SplitVelocityCommandCfg(UniformVelocityCommandCfg):
-  """Sample longitudinal, diagonal, and pure-lateral commands."""
+  """Sample standing, translation, lateral, and pure-yaw commands."""
 
-  # Magnitude of vx for forward/backward-moving environments.
-  lin_vel_x_abs_range: tuple[float, float] = (0.35, 0.65)
+  # Full forward/backward speed range.
+  lin_vel_x_abs_range: tuple[float, float] = (
+    0.25,
+    1.50,
+  )
 
-  # Probability that a longitudinal command points forward.
-  forward_probability: float = 0.5
+  forward_probability: float = 0.50
 
-  # Fraction of moving commands that will be purely lateral.
-  pure_lateral_probability: float = 0.20
+  # Extra low-speed longitudinal examples.
+  low_speed_probability: float = 0.35
 
-  # Magnitude of vy for pure-lateral environments.
-  lin_vel_y_abs_range: tuple[float, float] = (0.20, 0.40)
+  low_speed_x_abs_range: tuple[float, float] = (
+    0.25,
+    0.55,
+  )
 
-  # Probability of positive body-frame y motion.
-  # For your Spot convention, positive y is left.
-  left_probability: float = 0.5
+  # Of the low-speed commands, this fraction is straight:
+  # vy = 0 and wz = 0.
+  straight_low_speed_probability: float = 0.50
+
+  # Remaining low-speed commands receive only mild diagonal/yaw.
+  low_speed_max_abs_y: float = 0.15
+  low_speed_max_abs_yaw: float = 0.30
+
+  # Fractions of non-standing commands.
+  pure_lateral_probability: float = 0.30
+  pure_yaw_probability: float = 0.10
+
+  # Pure-lateral velocity range.
+  lin_vel_y_abs_range: tuple[float, float] = (
+    0.25,
+    0.80,
+  )
+
+  left_probability: float = 0.50
+
+  # Pure turning-in-place yaw-rate range.
+  ang_vel_z_abs_range: tuple[float, float] = (
+    0.20,
+    0.80,
+  )
+
+  left_turn_probability: float = 0.50
 
   def __post_init__(self) -> None:
     super().__post_init__()
 
     min_x, max_x = self.lin_vel_x_abs_range
-    if min_x <= 0.0:
+
+    if min_x <= 0.0 or max_x < min_x:
       raise ValueError(
-        "lin_vel_x_abs_range minimum must be greater than zero."
+        "Invalid lin_vel_x_abs_range."
       )
-    if max_x < min_x:
+
+    low_min_x, low_max_x = (
+      self.low_speed_x_abs_range
+    )
+
+    if not (
+      min_x
+      <= low_min_x
+      <= low_max_x
+      <= max_x
+    ):
       raise ValueError(
-        "lin_vel_x_abs_range maximum must be greater than "
-        "or equal to its minimum."
+        "low_speed_x_abs_range must lie inside "
+        "lin_vel_x_abs_range."
       )
 
     min_y, max_y = self.lin_vel_y_abs_range
-    if min_y <= 0.0:
+
+    if min_y <= 0.0 or max_y < min_y:
       raise ValueError(
-        "lin_vel_y_abs_range minimum must be greater than zero."
-      )
-    if max_y < min_y:
-      raise ValueError(
-        "lin_vel_y_abs_range maximum must be greater than "
-        "or equal to its minimum."
+        "Invalid lin_vel_y_abs_range."
       )
 
-    if not 0.0 <= self.forward_probability <= 1.0:
+    min_wz, max_wz = self.ang_vel_z_abs_range
+
+    if min_wz <= 0.0 or max_wz < min_wz:
       raise ValueError(
-        "forward_probability must be between 0 and 1."
+        "Invalid ang_vel_z_abs_range."
       )
 
-    if not 0.0 <= self.pure_lateral_probability <= 1.0:
+    if self.low_speed_max_abs_y < 0.0:
       raise ValueError(
-        "pure_lateral_probability must be between 0 and 1."
+        "low_speed_max_abs_y cannot be negative."
       )
 
-    if not 0.0 <= self.left_probability <= 1.0:
+    if self.low_speed_max_abs_yaw < 0.0:
       raise ValueError(
-        "left_probability must be between 0 and 1."
+        "low_speed_max_abs_yaw cannot be negative."
+      )
+
+    probabilities = {
+      "forward_probability": (
+        self.forward_probability
+      ),
+      "low_speed_probability": (
+        self.low_speed_probability
+      ),
+      "straight_low_speed_probability": (
+        self.straight_low_speed_probability
+      ),
+      "pure_lateral_probability": (
+        self.pure_lateral_probability
+      ),
+      "pure_yaw_probability": (
+        self.pure_yaw_probability
+      ),
+      "left_probability": (
+        self.left_probability
+      ),
+      "left_turn_probability": (
+        self.left_turn_probability
+      ),
+    }
+
+    for name, probability in probabilities.items():
+      if not 0.0 <= probability <= 1.0:
+        raise ValueError(
+          f"{name} must be between 0 and 1."
+        )
+
+    if (
+      self.pure_lateral_probability
+      + self.pure_yaw_probability
+      > 1.0
+    ):
+      raise ValueError(
+        "pure_lateral_probability and "
+        "pure_yaw_probability cannot sum above 1."
       )
 
     if self.init_velocity_prob != 0.0:
       raise ValueError(
-        "SplitVelocityCommandCfg currently requires "
+        "SplitVelocityCommandCfg requires "
         "init_velocity_prob=0.0."
       )
 
@@ -93,106 +170,266 @@ class SplitVelocityCommandCfg(UniformVelocityCommandCfg):
 
 
 class SplitVelocityCommand(UniformVelocityCommand):
-  """Sample longitudinal/diagonal or pure-lateral motion."""
+  """Sample standing, translation, lateral, and pure-yaw motion."""
 
   cfg: SplitVelocityCommandCfg
+
+  def _sample_signed_magnitude(
+    self,
+    count: int,
+    magnitude_range: tuple[float, float],
+    positive_probability: float,
+  ) -> torch.Tensor:
+    """Sample signed values from a nonzero magnitude range."""
+
+    minimum, maximum = magnitude_range
+
+    magnitude = torch.empty(
+      count,
+      device=self.device,
+    ).uniform_(
+      minimum,
+      maximum,
+    )
+
+    positive_mask = (
+      torch.rand(
+        count,
+        device=self.device,
+      )
+      < positive_probability
+    )
+
+    return torch.where(
+      positive_mask,
+      magnitude,
+      -magnitude,
+    )
 
   def _resample_command(
     self,
     env_ids: torch.Tensor,
   ) -> None:
-    # Standard MjLab sampling handles:
-    # - vy for ordinary longitudinal/diagonal commands
-    # - yaw velocity
-    # - standing environments
-    # - heading environments
+    """Resample commands for the selected environments."""
+
+    # The parent samples the normal vx, vy and yaw commands,
+    # chooses standing environments, and updates its internal flags.
     super()._resample_command(env_ids)
 
-    num_envs = len(env_ids)
-    if num_envs == 0:
+    if len(env_ids) == 0:
       return
 
-    # Select which environments receive pure-lateral commands.
-    lateral_mask = (
-      torch.rand(
-        num_envs,
-        device=self.device,
-      )
-      < self.cfg.pure_lateral_probability
+    # Preserve environments selected by the parent for standing.
+    # Their commands remain exactly [0, 0, 0].
+    standing_mask = self.is_standing_env[env_ids]
+    moving_ids = env_ids[~standing_mask]
+
+    if len(moving_ids) == 0:
+      return
+
+    # -----------------------------------------------------------
+    # Select command category for every non-standing environment.
+    # -----------------------------------------------------------
+    category_sample = torch.rand(
+      len(moving_ids),
+      device=self.device,
     )
 
-    longitudinal_mask = ~lateral_mask
+    yaw_limit = self.cfg.pure_yaw_probability
 
-    # -------------------------------------------------------------
-    # Forward/backward or diagonal commands
-    # -------------------------------------------------------------
-    longitudinal_ids = env_ids[longitudinal_mask]
+    lateral_limit = (
+      yaw_limit
+      + self.cfg.pure_lateral_probability
+    )
 
-    if len(longitudinal_ids) > 0:
-      min_x, max_x = self.cfg.lin_vel_x_abs_range
+    pure_yaw_mask = (
+      category_sample < yaw_limit
+    )
 
-      x_magnitude = torch.empty(
+    pure_lateral_mask = (
+      (category_sample >= yaw_limit)
+      & (category_sample < lateral_limit)
+    )
+
+    longitudinal_mask = ~(
+      pure_yaw_mask
+      | pure_lateral_mask
+    )
+
+    # -----------------------------------------------------------
+    # Pure turning in place:
+    # vx = 0, vy = 0, wz != 0
+    # -----------------------------------------------------------
+    pure_yaw_ids = moving_ids[
+      pure_yaw_mask
+    ]
+
+    if len(pure_yaw_ids) > 0:
+      self.vel_command_b[pure_yaw_ids] = 0.0
+
+      yaw_command = self._sample_signed_magnitude(
+        len(pure_yaw_ids),
+        self.cfg.ang_vel_z_abs_range,
+        self.cfg.left_turn_probability,
+      )
+
+      self.vel_command_b[
+        pure_yaw_ids,
+        2,
+      ] = yaw_command
+
+    # -----------------------------------------------------------
+    # Pure lateral:
+    # vx = 0, vy != 0, wz = 0
+    # -----------------------------------------------------------
+    pure_lateral_ids = moving_ids[
+      pure_lateral_mask
+    ]
+
+    if len(pure_lateral_ids) > 0:
+      self.vel_command_b[pure_lateral_ids] = 0.0
+
+      lateral_command = (
+        self._sample_signed_magnitude(
+          len(pure_lateral_ids),
+          self.cfg.lin_vel_y_abs_range,
+          self.cfg.left_probability,
+        )
+      )
+
+      self.vel_command_b[
+        pure_lateral_ids,
+        1,
+      ] = lateral_command
+
+    # -----------------------------------------------------------
+    # Forward/backward and diagonal commands.
+    # -----------------------------------------------------------
+    longitudinal_ids = moving_ids[
+      longitudinal_mask
+    ]
+
+    if len(longitudinal_ids) == 0:
+      return
+
+    low_speed_mask = (
+      torch.rand(
         len(longitudinal_ids),
         device=self.device,
-      ).uniform_(min_x, max_x)
+      )
+      < self.cfg.low_speed_probability
+    )
 
-      forward_mask = (
+    low_speed_ids = longitudinal_ids[
+      low_speed_mask
+    ]
+
+    normal_speed_ids = longitudinal_ids[
+      ~low_speed_mask
+    ]
+
+    # -----------------------------------------------------------
+    # Normal-speed longitudinal commands.
+    #
+    # Keep the vy and wz sampled by the parent so the policy still
+    # trains diagonal movement and translation while turning.
+    # -----------------------------------------------------------
+    if len(normal_speed_ids) > 0:
+      normal_min_x = (
+        self.cfg.low_speed_x_abs_range[1]
+      )
+
+      normal_max_x = (
+        self.cfg.lin_vel_x_abs_range[1]
+      )
+
+      x_command = self._sample_signed_magnitude(
+        len(normal_speed_ids),
+        (
+          normal_min_x,
+          normal_max_x,
+        ),
+        self.cfg.forward_probability,
+      )
+
+      self.vel_command_b[
+        normal_speed_ids,
+        0,
+      ] = x_command
+
+    # -----------------------------------------------------------
+    # Low-speed longitudinal commands.
+    # -----------------------------------------------------------
+    if len(low_speed_ids) > 0:
+      low_x_command = (
+        self._sample_signed_magnitude(
+          len(low_speed_ids),
+          self.cfg.low_speed_x_abs_range,
+          self.cfg.forward_probability,
+        )
+      )
+
+      self.vel_command_b[
+        low_speed_ids,
+        0,
+      ] = low_x_command
+
+      straight_mask = (
         torch.rand(
-          len(longitudinal_ids),
+          len(low_speed_ids),
           device=self.device,
         )
-        < self.cfg.forward_probability
+        < self.cfg.straight_low_speed_probability
       )
 
-      x_direction = torch.where(
-        forward_mask,
-        torch.ones_like(x_magnitude),
-        -torch.ones_like(x_magnitude),
-      )
+      straight_ids = low_speed_ids[
+        straight_mask
+      ]
 
-      self.vel_command_b[longitudinal_ids, 0] = (
-        x_direction * x_magnitude
-      )
+      mild_combined_ids = low_speed_ids[
+        ~straight_mask
+      ]
 
-      # vy is left unchanged here. It retains the value sampled from:
-      # ranges.lin_vel_y
-      #
-      # Therefore:
-      # ranges.lin_vel_y = (-0.15, 0.15)
-      # produces mild diagonal commands.
+      # Half of the low-speed examples are deliberately simple:
+      # slow straight forward or backward movement.
+      if len(straight_ids) > 0:
+        self.vel_command_b[
+          straight_ids,
+          1,
+        ] = 0.0
 
-    # -------------------------------------------------------------
-    # Pure sideways commands
-    # -------------------------------------------------------------
-    lateral_ids = env_ids[lateral_mask]
+        self.vel_command_b[
+          straight_ids,
+          2,
+        ] = 0.0
 
-    if len(lateral_ids) > 0:
-      min_y, max_y = self.cfg.lin_vel_y_abs_range
-
-      y_magnitude = torch.empty(
-        len(lateral_ids),
-        device=self.device,
-      ).uniform_(min_y, max_y)
-
-      left_mask = (
-        torch.rand(
-          len(lateral_ids),
+      # The other half include only mild lateral and yaw commands.
+      if len(mild_combined_ids) > 0:
+        mild_y = torch.empty(
+          len(mild_combined_ids),
           device=self.device,
+        ).uniform_(
+          -self.cfg.low_speed_max_abs_y,
+          self.cfg.low_speed_max_abs_y,
         )
-        < self.cfg.left_probability
-      )
 
-      y_direction = torch.where(
-        left_mask,
-        torch.ones_like(y_magnitude),
-        -torch.ones_like(y_magnitude),
-      )
+        mild_yaw = torch.empty(
+          len(mild_combined_ids),
+          device=self.device,
+        ).uniform_(
+          -self.cfg.low_speed_max_abs_yaw,
+          self.cfg.low_speed_max_abs_yaw,
+        )
 
-      # Pure lateral means no longitudinal motion.
-      self.vel_command_b[lateral_ids, 0] = 0.0
-      self.vel_command_b[lateral_ids, 1] = (
-        y_direction * y_magnitude
-      )
+        self.vel_command_b[
+          mild_combined_ids,
+          1,
+        ] = mild_y
+
+        self.vel_command_b[
+          mild_combined_ids,
+          2,
+        ] = mild_yaw
 
 
 def terrain_contact_detected(
@@ -375,12 +612,39 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     lower_leg_ground_cfg,
   )
 
-  # Enable terrain difficulty progression for rough-terrain training.
-  if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
-    terrain_generator = cfg.scene.terrain.terrain_generator
+  if (
+    cfg.scene.terrain is not None
+    and cfg.scene.terrain.terrain_generator is not None
+  ):
+    terrain_generator = (
+      cfg.scene.terrain.terrain_generator
+    )
+
     terrain_generator.curriculum = True
 
-    terrain_generator.horizontal_scale = 0.20
+    sub_terrains = terrain_generator.sub_terrains
+
+    # Limit hills and craters to realistic maximum gradients.
+    sub_terrains[
+      "hf_pyramid_slope"
+    ].slope_range = (0.0, 0.60)
+
+    sub_terrains[
+      "hf_pyramid_slope_inv"
+    ].slope_range = (0.0, 0.60)
+
+    # Coarsen only the heightfield terrains to reduce
+    # heightfield-contact overflow warnings.
+    for terrain_name in (
+      "hf_pyramid_slope",
+      "hf_pyramid_slope_inv",
+      "random_rough",
+      "wave_terrain",
+    ):
+      sub_terrains[
+        terrain_name
+      ].horizontal_scale = 0.20
+
 
   # Convert policy outputs into joint-position offsets.
   joint_pos_action = cfg.actions["joint_pos"]
@@ -499,25 +763,44 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
       max_diagonal_vy=0.40,
 
-      min_lateral_vy=0.25,
+      min_lateral_vy=0.35,
       max_lateral_vy=0.80,
 
-      max_wz=1.00,
+      max_wz= 0.80,
     )
 
   else:
     cfg.commands["twist"] = SplitVelocityCommandCfg(
       **common_command_kwargs,
 
-      rel_standing_envs=0.10,
+      # Five percent of all environments receive an exact
+      # zero command, and the custom sampler now preserves them.
+      rel_standing_envs=0.05,
 
-      lin_vel_x_abs_range=(0.25, 1.5),
+      # Full longitudinal range.
+      lin_vel_x_abs_range=(0.25, 1.50),
       forward_probability=0.50,
 
-      pure_lateral_probability=0.20,
+      # More exposure to controlled low-speed motion.
+      low_speed_probability=0.35,
+      low_speed_x_abs_range=(0.25, 0.55),
 
+      # Half of low-speed commands are straight.
+      straight_low_speed_probability=0.50,
+
+      # The other half contain only mild vy and yaw.
+      low_speed_max_abs_y=0.15,
+      low_speed_max_abs_yaw=0.30,
+
+      # Increase dedicated lateral exposure.
+      pure_lateral_probability=0.30,
       lin_vel_y_abs_range=(0.25, 0.80),
       left_probability=0.50,
+
+      # Add explicit turning-in-place training.
+      pure_yaw_probability=0.10,
+      ang_vel_z_abs_range=(0.20, 0.80),
+      left_turn_probability=0.50,
     )
 
   
@@ -565,27 +848,11 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 
   if play:
-    # Allow continuous viewing without short episode timeouts.
     cfg.episode_length_s = int(1e9)
 
-    # Disable observation noise and external pushes while debugging.
+    # Deterministic policy evaluation.
     cfg.observations["actor"].enable_corruption = False
 
-    # cfg.events.pop("push_robot", None)
-    push_event = cfg.events["push_robot"]
-    push_event.interval_range_s = (2.0, 5.0)
-
-    push_event.params["velocity_range"] = {
-      "x": (-0.25, 0.25),
-      "y": (-0.5, 0.5),
-      "z": (0.0, 0.0),
-      "roll": (0.0, 0.0),
-      "pitch": (0.0, 0.0),
-      "yaw": (-0.15, 0.15),
-    }
-
-    # cfg.terminations.pop("illegal_contact", None)
-    # Deterministic policy evaluation.
     for event_name in (
       "push_robot",
       "foot_friction",
@@ -596,10 +863,14 @@ def spot_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     if cfg.scene.terrain is not None:
       if cfg.scene.terrain.terrain_generator is not None:
-        cfg.scene.terrain.terrain_generator.curriculum = False
-        cfg.scene.terrain.terrain_generator.num_cols = 20
-        cfg.scene.terrain.terrain_generator.num_rows = 10
-        cfg.scene.terrain.terrain_generator.border_width = 10.0
+        terrain_generator = (
+          cfg.scene.terrain.terrain_generator
+        )
+
+        terrain_generator.curriculum = False
+        terrain_generator.num_cols = 20
+        terrain_generator.num_rows = 10
+        terrain_generator.border_width = 10.0
 
   return cfg
 

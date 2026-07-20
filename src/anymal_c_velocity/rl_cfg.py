@@ -40,6 +40,8 @@ def spot_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     ),
     algorithm=RslRlPpoAlgorithmCfg(
       entropy_coef=0.01,
+      learning_rate=5e-4,
+      schedule="fixed",
     ),
     experiment_name="spot_velocity",
     max_iterations=10_000,

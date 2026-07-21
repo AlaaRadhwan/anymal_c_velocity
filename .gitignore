@@ -27,8 +27,7 @@ checkpoints/
 Downloadable Files/
 *.zip
 *.tar.gz
-src/src_zip/
-src/zip_spot_v1.0/
 
-deployment/
-tools/
+src/Zip Files/**
+
+deployment/chat/**
